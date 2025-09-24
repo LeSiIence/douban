@@ -4,6 +4,7 @@ import time
 import random
 import csv
 import os
+import sys
 import argparse
 
 # 尝试导入Selenium，如果不可用则使用备用方案
@@ -35,9 +36,9 @@ CSV_FILE = 'books.csv'
 MAX_PAGES = 3  # 默认爬取3页
 
 # --- 调试配置 ---
-DEBUG_MODE = True  # 设置为False可关闭所有调试输出
-SAVE_HTML = True   # 是否保存原始HTML文件用于调试
-USE_SELENIUM = SELENIUM_AVAILABLE  # 如果Selenium可用则默认使用
+DEBUG_MODE = False  # 设置为False可关闭所有调试输出
+SAVE_HTML = False   # 是否保存原始HTML文件用于调试
+USE_SELENIUM = True # 3默认使用
 
 # --- 调试工具函数 ---
 def debug_print(message, level="INFO"):
@@ -117,11 +118,6 @@ def fetch_page_with_selenium(driver, url):
 if not os.path.exists(IMAGE_DIR):
     os.makedirs(IMAGE_DIR)
 
-# 打开CSV文件并写入表头（使用UTF-8 BOM编码，确保Office正确显示中文）
-with open(CSV_FILE, 'w', newline='', encoding='utf-8-sig') as f:
-    writer = csv.writer(f)
-    writer.writerow(['热度排名', '书名', '作者', '简介', '分类', '字数', '价格'])
-
 # --- 爬虫核心逻辑 ---
 
 def init_webdriver():
@@ -180,7 +176,7 @@ def fetch_book_data_selenium(url, driver, page_num=1):
                 EC.presence_of_element_located((By.CSS_SELECTOR, "li[data-works-id]"))
             )
             # 额外等待确保所有数据都加载完成
-            time.sleep(3)
+            time.sleep(random.uniform(2, 3))
             debug_print("检测到实际书籍数据已加载")
         except TimeoutException:
             debug_print("未检测到实际书籍数据，可能页面仍在加载中...")
@@ -301,14 +297,68 @@ def fetch_book_data_selenium(url, driver, page_num=1):
                             break
                 
                 # 提取价格信息
-                price = "未知"
+                original_price = "未知"
+                current_price = "未知"
                 price_elem = book.find('span', class_='price-tag')
                 if price_elem:
-                    price_text = price_elem.get_text(strip=True)
-                    price = price_text if price_text else "未知"
+                    # 查找原价和现价的具体元素
+                    original_price_elem = price_elem.find('s', class_='original-price')
+                    discount_price_elem = price_elem.find('span', class_='discount-price')
+                    
+                    if original_price_elem and discount_price_elem:
+                        # 有打折，存在原价和现价
+                        original_price = f"￥{original_price_elem.get_text(strip=True)}"
+                        current_price = f"￥{discount_price_elem.get_text(strip=True)}"
+                    else:
+                        # 没有打折，只有一个价格
+                        price_text = price_elem.get_text(strip=True)
+                        if price_text:
+                            # 移除多余的￥符号，只保留数字部分
+                            import re
+                            price_numbers = re.findall(r'\d+\.?\d*', price_text)
+                            if price_numbers:
+                                price_value = price_numbers[0]
+                                original_price = f"￥{price_value}"
+                                current_price = f"￥{price_value}"
+                            else:
+                                original_price = price_text
+                                current_price = price_text
                 
-                # 计算热度排名
-                ranking = (page_num - 1) * 10 + (i + 1)
+                # 提取分类信息
+                categories = []
+                extra_info = book.find('div', class_='extra-info')
+                if extra_info:
+                    category_links = extra_info.find_all('a', class_='kind-link')
+                    for link in category_links:
+                        category_name = link.get_text(strip=True)
+                        if category_name:
+                            categories.append(category_name)
+                
+                if categories:
+                    category_str = " + ".join(categories)
+                else:
+                    category_str = "未分类"
+                
+                debug_print(f"分类: {category_str}")
+                
+                # 计算热度排名（每页20本书）
+                ranking = (page_num - 1) * 20 + (i + 1)
+                
+                # 下载书籍封面图片
+                img_filename = None
+                try:
+                    img_elem = book.find('img')
+                    if img_elem and img_elem.get('src'):
+                        img_url = img_elem['src']
+                        # 去掉缩略图参数，获取原图
+                        if '!' in img_url:
+                            img_url = img_url.split('!')[0]
+                        debug_print(f"找到封面图片: {img_url}")
+                        img_filename = download_image(img_url, ranking, title)
+                    else:
+                        debug_print(f"第 {i+1} 本书没有找到封面图片")
+                except Exception as e:
+                    debug_print(f"下载第 {i+1} 本书封面失败: {e}", "ERROR")
                 
                 # 组装数据
                 data_row = {
@@ -316,8 +366,11 @@ def fetch_book_data_selenium(url, driver, page_num=1):
                     '书名': title,
                     '作者': author,
                     '简介': intro,
+                    '分类': category_str,
                     '字数': word_count,
-                    '价格': price
+                    '原价': original_price,
+                    '现价': current_price,
+                    '封面图片': img_filename or '未下载'
                 }
                 books_data.append(data_row)
                 debug_print(f"成功提取第 {i+1} 本书的信息", "SUCCESS")
@@ -329,13 +382,13 @@ def fetch_book_data_selenium(url, driver, page_num=1):
         return books_data
         
     except TimeoutException:
-        debug_print("❌ 页面加载超时", "ERROR")
+        debug_print(" 页面加载超时", "ERROR")
         return None
     except WebDriverException as e:
-        debug_print(f"❌ WebDriver错误: {e}", "ERROR")
+        debug_print(f" WebDriver错误: {e}", "ERROR")
         return None
     except Exception as e:
-        debug_print(f"❌ 其他错误: {e}", "ERROR")
+        debug_print(f" 其他错误: {e}", "ERROR")
         return None
 
 def fetch_book_data(url, page_num=1, start_rank=1, driver=None):
@@ -473,24 +526,79 @@ def fetch_book_data(url, page_num=1, start_rank=1, driver=None):
                     abstract = "无简介信息"
                     debug_print(f"第 {i+1} 本书缺少简介信息")
                 
+                # 提取价格信息
+                original_price = "未知"
+                current_price = "未知"
+                price_elem = book.find('span', class_='price-tag')
+                if price_elem:
+                    # 查找原价和现价的具体元素
+                    original_price_elem = price_elem.find('s', class_='original-price')
+                    discount_price_elem = price_elem.find('span', class_='discount-price')
+                    
+                    if original_price_elem and discount_price_elem:
+                        # 有打折，存在原价和现价
+                        original_price = f"￥{original_price_elem.get_text(strip=True)}"
+                        current_price = f"￥{discount_price_elem.get_text(strip=True)}"
+                    else:
+                        # 没有打折，只有一个价格
+                        price_text = price_elem.get_text(strip=True)
+                        if price_text:
+                            # 移除多余的￥符号，只保留数字部分
+                            import re
+                            price_numbers = re.findall(r'\d+\.?\d*', price_text)
+                            if price_numbers:
+                                price_value = price_numbers[0]
+                                original_price = f"￥{price_value}"
+                                current_price = f"￥{price_value}"
+                            else:
+                                original_price = price_text
+                                current_price = price_text
+                
+                # 提取分类信息
+                categories = []
+                category_links = book.find_all('a', class_='kind-link')
+                for link in category_links:
+                    category_name = link.get_text(strip=True)
+                    if category_name:
+                        categories.append(category_name)
+                
+                if categories:
+                    category_str = " + ".join(categories)
+                else:
+                    category_str = "未分类"
+                
+                debug_print(f"分类: {category_str}")
+                
+                # 下载书籍封面图片
+                img_filename = None
+                try:
+                    img_elem = book.find('img')
+                    if img_elem and img_elem.get('src'):
+                        img_url = img_elem['src']
+                        # 去掉缩略图参数，获取原图
+                        if '!' in img_url:
+                            img_url = img_url.split('!')[0]
+                        debug_print(f"找到封面图片: {img_url}")
+                        img_filename = download_image(img_url, current_rank, title)
+                    else:
+                        debug_print(f"第 {i+1} 本书没有找到封面图片")
+                except Exception as e:
+                    debug_print(f"下载第 {i+1} 本书封面失败: {e}", "ERROR")
+                
                 # 组装数据（增加热度排名字段）
                 data_row = {
                     '热度排名': current_rank,
                     '书名': title,
                     '作者': author,
                     '简介': abstract,
-                    '分类': '计算机与互联网',
+                    '分类': category_str,
                     '字数': '未知',
-                    '价格': '未知'
+                    '原价': original_price,
+                    '现价': current_price,
+                    '封面图片': img_filename or '未下载'
                 }
                 book_data.append(data_row)
                 debug_print(f"成功提取第 {i+1} 本书的信息（排名第{current_rank}）", "SUCCESS")
-                
-                # 下载图片逻辑（暂时注释）
-                # img_elem = book.find('img')
-                # if img_elem and img_elem.get('src'):
-                #     img_url = img_elem['src']
-                #     download_image(img_url, f"{len(book_data)}.jpg")
                 
             except Exception as e:
                 debug_print(f"处理第 {i+1} 本书时出错: {e}", "ERROR")
@@ -508,25 +616,60 @@ def fetch_book_data(url, page_num=1, start_rank=1, driver=None):
         debug_print(f"解析页面时出错: {e}", "ERROR")
         return []
 
-def download_image(url, filename):
+def clean_filename(filename):
     """
-    下载单张图片
+    清理文件名，移除不合法的字符
+    """
+    # 移除或替换不合法的文件名字符
+    illegal_chars = ['<', '>', ':', '"', '|', '?', '*', '/', '\\']
+    cleaned = filename
+    for char in illegal_chars:
+        cleaned = cleaned.replace(char, '_')
+    
+    # 移除首尾空格和点
+    cleaned = cleaned.strip(' .')
+    
+    # 限制文件名长度，避免过长
+    if len(cleaned) > 100:
+        cleaned = cleaned[:100]
+    
+    return cleaned
+
+def download_image(url, ranking, book_title):
+    """
+    下载单张图片，按照"热度排名_书名.jpg"格式保存
     """
     try:
-        img_response = requests.get(url, headers=HEADERS)
+        # 清理书名，生成安全的文件名
+        clean_title = clean_filename(book_title)
+        filename = f"{ranking}_{clean_title}.jpg"
+        
+        debug_print(f"开始下载图片: {filename}")
+        
+        img_response = requests.get(url, headers=HEADERS, timeout=10)
         img_response.raise_for_status()
-        with open(os.path.join(IMAGE_DIR, filename), 'wb') as f:
+        
+        filepath = os.path.join(IMAGE_DIR, filename)
+        with open(filepath, 'wb') as f:
             f.write(img_response.content)
-        debug_print(f"已下载: {filename}", "SUCCESS")
+        
+        debug_print(f" 图片下载成功: {filename}", "SUCCESS")
+        return filename
+        
     except requests.exceptions.RequestException as e:
-        debug_print(f"图片下载失败: {e}", "ERROR")
+        debug_print(f" 图片下载失败: {e}", "ERROR")
+        return None
+    except Exception as e:
+        debug_print(f" 图片保存失败: {e}", "ERROR")
+        return None
 
 def save_to_csv(data):
     """
-    将数据追加到CSV文件（使用UTF-8 BOM编码）
+    将数据保存到CSV文件（使用UTF-8 BOM编码）
     """
-    with open(CSV_FILE, 'a', newline='', encoding='utf-8-sig') as f:
-        writer = csv.DictWriter(f, fieldnames=['热度排名', '书名', '作者', '简介', '分类', '字数', '价格'])
+    with open(CSV_FILE, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.DictWriter(f, fieldnames=['热度排名', '书名', '作者', '简介', '分类', '字数', '原价', '现价', '封面图片'])
+        writer.writeheader()  # 写入表头
         writer.writerows(data)
 
 # --- 主程序 ---
@@ -546,6 +689,16 @@ def main():
     
     args = parser.parse_args()
     
+    # 如果没有指定页数参数，则提示用户输入
+    if '--pages' not in sys.argv:
+        try:
+            user_pages = input("请输入要爬取的页数: ")
+            MAX_PAGES = int(user_pages)
+        except (ValueError, KeyboardInterrupt):
+            print("输入无效，使用默认页数:", MAX_PAGES)
+    else:
+        MAX_PAGES = args.pages
+    
     # 根据命令行参数调整配置
     if args.debug:
         DEBUG_MODE = True
@@ -562,8 +715,6 @@ def main():
     elif args.no_selenium:
         USE_SELENIUM = False
     
-    MAX_PAGES = args.pages
-    
     print("=" * 50)
     print("豆瓣读书爬虫启动")
     print("=" * 50)
@@ -578,11 +729,13 @@ def main():
     # 根据配置选择爬取方式
     if USE_SELENIUM:
         if not SELENIUM_AVAILABLE:
-            print("❌ 错误：指定使用Selenium但Selenium不可用")
+            print(" 错误：指定使用Selenium但Selenium不可用")
             return
-        debug_print("✅ 将使用Selenium浏览器模式进行爬取")
+        print(" 使用浏览器模式进行爬取")
+        debug_print(" 将使用Selenium浏览器模式进行爬取")
     else:
-        debug_print("🔧 将使用requests模式进行爬取")
+        print(" 使用HTTP请求模式进行爬取")
+        debug_print(" 将使用requests模式进行爬取")
     
     all_books = []
     current_ranking = 1
@@ -590,17 +743,23 @@ def main():
     
     # 初始化WebDriver（如果需要）
     if USE_SELENIUM and SELENIUM_AVAILABLE:
+        print(" 正在初始化浏览器...")
         debug_print("初始化Chrome浏览器...")
         driver = init_webdriver()
         if driver is None:
-            print("❌ 错误：无法初始化WebDriver")
+            print(" 错误：无法初始化WebDriver")
             return
+        print(" 浏览器初始化完成")
     
     try:
         debug_print("开始爬取豆瓣读书...")
+        print(f" 开始爬取 {MAX_PAGES} 页数据...")
         
         for page_num in range(1, MAX_PAGES + 1):
             debug_print(f"\n--- 开始爬取第 {page_num} 页 ---")
+            
+            # 显示进度信息
+            print(f"[{page_num}/{MAX_PAGES}] 正在获取第 {page_num} 页数据...", end=" ")
             
             url = f"https://read.douban.com/category/105?sort=hot&page={page_num}"
             
@@ -608,23 +767,24 @@ def main():
             if USE_SELENIUM and driver:
                 books_data = fetch_book_data_selenium(url, driver, page_num)
             else:
-                books_data = fetch_book_data(url, page_num)
+                # 计算当前页的起始排名（每页20本书）
+                start_rank = (page_num - 1) * 20 + 1
+                books_data = fetch_book_data(url, page_num, start_rank)
             
             if books_data is None:
+                print(" 失败")
                 debug_print(f"第 {page_num} 页获取失败，跳过")
                 continue
             
             if not books_data:
+                print(" 无数据")
                 debug_print(f"第 {page_num} 页没有找到书籍数据")
                 continue
             
-            # 添加排名信息
-            for book in books_data:
-                book['热度排名'] = current_ranking
-                current_ranking += 1
-            
+            # 不需要重新分配排名，各页面函数已经正确计算了排名
             all_books.extend(books_data)
             
+            print(f" 获取 {len(books_data)} 本书")
             debug_print(f"第 {page_num} 页成功获取 {len(books_data)} 本书")
             
             # 延迟避免请求太频繁
@@ -638,14 +798,19 @@ def main():
             debug_print("关闭浏览器...")
             driver.quit()
     
+    # 显示完成信息
+    print(f"\n 爬取完成！共获得 {len(all_books)} 本书的数据")
     debug_print(f"所有页面爬取完成，共获得 {len(all_books)} 本书的数据")
     
     if all_books:
+        print(" 正在保存到CSV文件...")
         debug_print("开始保存数据到CSV...")
         save_to_csv(all_books)
+        print(f" 成功保存 {len(all_books)} 本书的信息到 {CSV_FILE}")
         debug_print(f"成功将 {len(all_books)} 本书的信息存入 {CSV_FILE}")
     else:
-        debug_print("⚠️  没有获取到任何数据！")
+        print(" 没有获取到任何数据！")
+        debug_print("  没有获取到任何数据！")
         debug_print("请检查:")
         debug_print("  1. 网络连接是否正常")
         debug_print("  2. 目标网站是否可以访问")
