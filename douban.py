@@ -66,7 +66,7 @@ def create_selenium_driver():
     
     try:
         options = Options()
-        options.add_argument('--headless')  # 无头模式，不显示浏览器窗口
+        options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -123,7 +123,7 @@ if not os.path.exists(IMAGE_DIR):
 def init_webdriver():
     """初始化Chrome WebDriver"""
     if not SELENIUM_AVAILABLE:
-        debug_print("❌ Selenium不可用，无法初始化WebDriver", "ERROR")
+        debug_print("Selenium不可用，无法初始化WebDriver", "ERROR")
         return None
     
     try:
@@ -208,21 +208,21 @@ def fetch_book_data_selenium(url, driver, page_num=1):
         if react_root:
             works_list = react_root.find('ul', class_='works-list')
             if works_list:
-                debug_print("✅ 找到React动态加载的works-list容器")
+                debug_print("找到React动态加载的works-list容器")
             else:
-                debug_print("⚠️  React根节点存在但未找到works-list")
+                debug_print("React根节点存在但未找到works-list")
                 works_list = None
         else:
-            debug_print("⚠️  未找到React根节点")
+            debug_print("未找到React根节点")
             works_list = None
         
         # 如果动态内容没找到，尝试静态内容
         if not works_list:
             works_list = soup.find('ul', class_='works-list')
             if works_list:
-                debug_print("✅ 找到静态works-list容器")
+                debug_print("找到静态works-list容器")
             else:
-                debug_print("❌ 未找到任何works-list容器")
+                debug_print("未找到任何works-list容器")
                 return []
         
         # 获取所有实际的书籍项目（有data-works-id的，排除loading skeleton）
@@ -278,8 +278,8 @@ def fetch_book_data_selenium(url, driver, page_num=1):
                 intro_elem = book.find('a', class_='intro')
                 if intro_elem:
                     intro = intro_elem.get_text(strip=True)
-                    if len(intro) > 200:
-                        intro = intro[:200] + "..."
+                    if len(intro) > 2000:
+                        intro = intro[:2000] + "..."
                     debug_print(f"简介长度: {len(intro)} 字符")
                 else:
                     intro = "无简介信息"
